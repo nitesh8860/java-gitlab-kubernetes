@@ -1,0 +1,33 @@
+kind: Service
+apiVersion: v1
+metadata:
+    name: service-sample-app
+    labels:
+        app: service-sample-app
+spec:
+    ports:
+    -   port: 80
+        targetPort: 8080
+    selector:
+        app: sample-app
+---
+apiVersion: apps/v1 
+kind: Deployment
+metadata:
+  name: sample-app
+spec:
+  selector:
+    matchLabels:
+      app: sample-app
+  replicas: 2 
+  template:
+    metadata:
+      labels:
+        app: sample-app
+    spec:
+      containers:
+      - name: sample-app
+        image: xxxxxxxxxxx.dkr.ecr.eu-west-1.amazonaws.com/sample-dev:sample-app-<VERSION>
+        ports:
+        - containerPort: 8080
+

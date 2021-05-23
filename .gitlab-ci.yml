@@ -1,0 +1,75 @@
+stages:
+  - build
+  - sonar
+  - upload
+  - deploy
+
+Build-artifact:
+  stage: build
+  image:  maven:3.3.9
+  script:
+    - mkdir -p /opt/tomcat
+    - cp webapp/env/ci/sample-app.properties /opt/tomcat/sample-app.properties
+    - mvn clean install -Pci
+    - cp webapp/target/project-sample-app.war $CI_PROJECT_NAME-$CI_COMMIT_BRANCH-$CI_COMMIT_SHORT_SHA-$CI_PIPELINE_ID.war
+    - cp webapp/target/project-sample-app.war $CI_PROJECT_NAME-$CI_COMMIT_BRANCH.war
+    - cp webapp/env/ci/sample-app.properties sample-app.properties
+  artifacts:
+    paths:
+      - webapp
+      - $CI_PROJECT_NAME-$CI_COMMIT_BRANCH-$CI_COMMIT_SHORT_SHA-$CI_PIPELINE_ID.war
+      - $CI_PROJECT_NAME-$CI_COMMIT_BRANCH.war
+      - sample-app.properties
+    expire_in: 1 days
+
+
+Sonarqube-check:
+  stage: sonar
+  image:
+    name: sonarsource/sonar-scanner-cli:latest
+    entrypoint: [""]
+  variables:
+    SONAR_HOST_URL: $SONAR_HOST_URL
+    GIT_DEPTH: 0
+  dependencies:
+    - Build-artifact
+  script:
+    - sonar-scanner -Dsonar.qualitygate.wait=true  -Dsonar.projectKey=$CI_PROJECT_NAME-$CI_COMMIT_BRANCH -Dsonar.sourceEncoding=UTF-8 -Dsonar.projectVersion=$CI_COMMIT_SHORT_SHA-$CI_PIPELINE_ID -Dsonar.sources=webapp/src/main -Dsonar.tests=webapp/src/test -Dsonar.java.binaries=webapp/target/classes -Dsonar.jacoco.reportPaths=webapp/target/coverage-reports/jacoco-unit.exec -Dsonar.junit.reportPaths=webapptarget/surefire-reports
+
+Upload-artifact:
+  image: $CI_REGISTRY/project/docker/jfrog-cli:1.0
+  stage: upload
+  dependencies:
+    - Build-artifact
+  script:
+    - jfrog rt config --url=$JFROG_URL --user=$JFROG_USER --password=$JFROG_PASS
+    - jfrog rt c show
+    - jfrog rt upload $CI_PROJECT_NAME-$CI_COMMIT_BRANCH-$CI_COMMIT_SHORT_SHA-$CI_PIPELINE_ID.war $CI_PROJECT_NAME
+    - jfrog rt upload $CI_PROJECT_NAME-$CI_COMMIT_BRANCH.war $CI_PROJECT_NAME
+  only:
+      - master
+      - develop
+      - release
+
+Deploy-container:
+  stage: deploy
+  image: gitlab.projectdevops.com:5050/project/docker/docker-kubectl
+  services:
+    - docker:18.09.7-dind
+  before_script:
+    - apk add --update --no-cache curl jq py-pip
+    - pip install awscli
+    - curl -LO https://storage.googleapis.com/kubernetes-release/release/`curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt`/bin/linux/amd64/kubectl
+    - chmod +x ./kubectl
+    - mv ./kubectl /usr/local/bin/kubectl
+    - kubectl version --client
+  dependencies:
+    - Build-artifact
+  script:
+    - mv $CI_PROJECT_NAME-$CI_COMMIT_BRANCH-$CI_COMMIT_SHORT_SHA-$CI_PIPELINE_ID.war sample-app.war
+    - $(aws ecr get-login --no-include-email --region eu-west-1)
+    - docker build -t $REPOSITORY_URL/project-dev:sample-app-$CI_COMMIT_SHORT_SHA .
+    - docker push $REPOSITORY_URL/project-dev:sample-app-$CI_COMMIT_SHORT_SHA
+    - aws eks --region eu-west-1 update-kubeconfig --name project-dev
+    - sed -i "s/<VERSION>/${CI_COMMIT_SHORT_SHA}/g" service.yaml
+    - kubectl apply -f service.yaml
